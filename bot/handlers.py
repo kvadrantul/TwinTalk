@@ -30,24 +30,44 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Отправьте /import чтобы начать настройку."
         )
     else:
-        # Group chat: find session for this group and start orchestrator
-        session_id = context.user_data.get("session_id")
-        if not session_id:
-            # Try to find by group_chat_id from DB
-            sessions = await repository.get_sessions_by_user(user.id)
-            for s in sessions:
-                if s.get("group_chat_id") == chat.id:
-                    session_id = s["id"]
-                    break
+        # Group chat: find session and start orchestrator
+        session_id = None
         
-        if session_id and session_id in active_orchestrators:
-            orch = active_orchestrators[session_id]
+        # Try to find existing session for this user
+        sessions = await repository.get_sessions_by_user(user.id)
+        for s in sessions:
+            if s.get("status") in ("idle", "ready"):
+                session_id = s["id"]
+                break
+        
+        if not session_id:
+            await update.message.reply_text(
+                "❌ Нет настроенной симуляции.\n\n"
+                "Сначала в личном чате со мной:\n"
+                "1. /import → загрузите result.json\n"
+                "2. Отправьте токены двух ботов\n"
+                "3. Добавьте менеджера и ботов-персонажей в эту группу\n"
+                "4. Отправьте /start здесь"
+            )
+            return
+        
+        # Update group_chat_id in session
+        await repository.update_session_group(session_id, chat.id)
+        
+        # Initialize and start orchestrator
+        try:
+            orch = ConversationOrchestrator(session_id, chat.id)
+            await orch.initialize()
+            active_orchestrators[session_id] = orch
+            
+            # Store session_id in user_data for this group context
+            context.user_data["session_id"] = session_id
+            
             await orch.start()
             await update.message.reply_text("▶️ Симуляция запущена!")
-        else:
-            await update.message.reply_text(
-                "Сначала настройте симуляцию через /import в личном чате со мной."
-            )
+        except Exception as e:
+            logger.exception("Error starting orchestrator")
+            await update.message.reply_text(f"❌ Ошибка запуска: {e}")
 
 
 async def import_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -296,6 +316,7 @@ async def _handle_token_b(update, context, token: str, user_id: int):
         
         bot_a_username = context.user_data["bot_a_info"]["username"]
         bot_b_username = context.user_data["bot_b_info"]["username"]
+        manager_username = context.bot.username
         
         await update.message.reply_text(
             f"✅ Персонажи созданы!\n\n"
@@ -303,7 +324,7 @@ async def _handle_token_b(update, context, token: str, user_id: int):
             f"• {name_b} → @{bot_b_username}\n\n"
             f"Теперь:\n"
             f"1. Создайте группу в Telegram\n"
-            f"2. Добавьте @{bot_a_username} и @{bot_b_username} в группу\n"
+            f"2. Добавьте @{manager_username} (менеджер), @{bot_a_username} и @{bot_b_username} в группу\n"
             f"3. Отправьте /start в группе"
         )
     except TelegramAPIError:
