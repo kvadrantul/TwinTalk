@@ -21,6 +21,7 @@ _client = openai.AsyncOpenAI(base_url=WAVESPEED_BASE_URL, api_key=WAVESPEED_API_
 _model = WAVESPEED_MODEL
 
 _CHUNK_SIZE = 200
+_MAX_MESSAGES = 2000  # Sample at most this many messages for analysis
 _TEMPERATURE = 0.3
 _MAX_TOKENS = 4000
 
@@ -181,6 +182,18 @@ async def extract_memories(
     Never raises — always returns at least a minimal valid dict.
     """
     try:
+        # Sample messages if the chat is very large (to avoid hundreds of API calls)
+        if len(messages) > _MAX_MESSAGES:
+            import random
+            # Stratified sample: take messages evenly spread across the timeline
+            step = len(messages) // _MAX_MESSAGES
+            sampled = messages[::step][:_MAX_MESSAGES]
+            logger.info(
+                "Sampled %d messages from %d total for memory extraction",
+                len(sampled), len(messages),
+            )
+            messages = sampled
+
         if len(messages) <= _CHUNK_SIZE:
             return await _extract_single(
                 participant_name, other_name, messages, progress_callback
