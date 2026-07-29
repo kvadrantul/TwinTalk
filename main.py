@@ -35,7 +35,7 @@ def main() -> None:
 
     # Document handler — JSON file uploads in private chat
     application.add_handler(MessageHandler(
-        filters.Document.MIME_TYPE("application/json") & filters.ChatType.PRIVATE,
+        filters.Document.ALL & filters.ChatType.PRIVATE,
         document_handler,
     ))
 
