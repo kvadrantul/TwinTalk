@@ -310,6 +310,10 @@ async def _handle_token_b(update, context, token: str, user_id: int):
         
         await repository.update_session_characters(session_id, char_a_id, char_b_id)
         
+        # Save original messages to DB for future memory re-extraction
+        from db.repository import save_original_messages
+        await save_original_messages(session_id, parsed["messages"])
+        
         # Extract memories from the full chat history
         await update.message.reply_text("⏳ Анализирую переписку и создаю память персонажей...")
         
@@ -438,3 +442,72 @@ async def regenerate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     except Exception as e:
         logger.exception("Regenerate failed")
         await update.message.reply_text(f"❌ Ошибка перегенерации: {e}")
+
+
+async def refresh_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /refresh — re-extract memories from saved chat history."""
+    user = update.effective_user
+    
+    # Find active session
+    session_id = context.user_data.get("session_id")
+    if not session_id:
+        sessions = await repository.get_sessions_by_user(user.id)
+        for s in sessions:
+            if s.get("status") in ("idle", "ready", "running", "paused"):
+                session_id = s["id"]
+                break
+    
+    if not session_id:
+        await update.message.reply_text("Нет активной сессии.")
+        return
+    
+    # Get original messages
+    from db.repository import get_original_messages, get_characters_by_session, update_character_memories
+    from parser.memory_extractor import extract_memories
+    from parser.export_parser import ParsedMessage
+    from datetime import datetime
+    
+    original_msgs = await get_original_messages(session_id)
+    if not original_msgs:
+        await update.message.reply_text(
+            "❌ Оригинальная переписка не найдена. "
+            "Пройдите /import заново чтобы загрузить переписку."
+        )
+        return
+    
+    await update.message.reply_text("⏳ Перечитываю переписку и обновляю память...")
+    
+    # Reconstruct ParsedMessage objects
+    all_messages = []
+    for m in original_msgs:
+        all_messages.append(ParsedMessage(
+            id=len(all_messages),
+            sender_name=m["sender_name"],
+            sender_id="",
+            text=m["text"],
+            timestamp=datetime.fromisoformat(m["timestamp"]),
+        ))
+    
+    # Get characters
+    characters = await get_characters_by_session(session_id)
+    if len(characters) < 2:
+        await update.message.reply_text("❌ Не найдены персонажи сессии.")
+        return
+    
+    name_a = characters[0]["name"]
+    name_b = characters[1]["name"]
+    
+    msgs_a = [m for m in all_messages if m.sender_name == name_a]
+    msgs_b = [m for m in all_messages if m.sender_name == name_b]
+    
+    try:
+        memories_a = await extract_memories(name_a, name_b, msgs_a)
+        await update_character_memories(characters[0]["id"], memories_a)
+        
+        memories_b = await extract_memories(name_b, name_a, msgs_b)
+        await update_character_memories(characters[1]["id"], memories_b)
+        
+        await update.message.reply_text("✅ Память персонажей обновлена!")
+    except Exception as e:
+        logger.exception("Memory re-extraction failed")
+        await update.message.reply_text(f"❌ Ошибка: {e}")

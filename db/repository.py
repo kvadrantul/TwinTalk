@@ -168,3 +168,32 @@ async def get_user_state(user_id: int) -> Optional[dict]:
 
 async def clear_user_state(user_id: int) -> None:
     await _execute("DELETE FROM user_states WHERE user_id = ?", (user_id,))
+
+
+# ── Original Messages ────────────────────────────────────────────────────────
+
+async def save_original_messages(session_id: str, messages: list[dict]) -> None:
+    """Save original chat messages. Each dict has: sender_name, text, timestamp"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.executemany(
+            "INSERT INTO original_messages (session_id, sender_name, text, timestamp) VALUES (?, ?, ?, ?)",
+            [(session_id, m["sender_name"], m["text"], m["timestamp"]) for m in messages],
+        )
+        await db.commit()
+
+
+async def get_original_messages(session_id: str) -> list[dict]:
+    """Get all original messages for a session, ordered by timestamp."""
+    return await _execute(
+        "SELECT sender_name, text, timestamp FROM original_messages WHERE session_id = ? ORDER BY timestamp ASC",
+        (session_id,),
+        fetch_all=True,
+    )
+
+
+async def delete_original_messages(session_id: str) -> None:
+    """Delete original messages for a session."""
+    await _execute(
+        "DELETE FROM original_messages WHERE session_id = ?",
+        (session_id,),
+    )
