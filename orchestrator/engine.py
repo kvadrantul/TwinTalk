@@ -46,6 +46,8 @@ class ConversationOrchestrator:
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # not paused initially
         self._turns_since_last_recall = 0
+        self._turns_on_current_topic = 0
+        self._current_memory_category = None  # track which memory category is currently being used
         self._used_topics: set = set()  # track recently used topic indices to avoid repetition
         self._next_turn_speaker = 0  # track who starts (0 = char A, 1 = char B)
 
@@ -294,18 +296,28 @@ class ConversationOrchestrator:
             else:
                 original_context = original_msgs
 
-        # Topic injection: every 2-3 turns, inject a random memory
-        # Always inject on first turn to give conversation a starting topic
+        # Topic injection logic
         memory_hint = None
-        if self._current_turn == 0 or self._turns_since_last_recall >= random.randint(2, 3):
+
+        if self._current_turn == 0:
+            # First turn: always inject a topic to start the conversation
             memory_hint = self._pick_random_memory(speaker)
             if memory_hint:
-                self._turns_since_last_recall = 0
-                logger.info("Memory injected for %s: %s", speaker_name, memory_hint[:80])
-            # Even if no memory found, reset counter
-            self._turns_since_last_recall = 0
+                self._turns_on_current_topic = 0
+                self._current_memory_category = self._detect_memory_category(memory_hint)
+                logger.info("First turn topic for %s [%s]: %s", speaker_name, self._current_memory_category, memory_hint[:80])
+        elif self._turns_on_current_topic >= 2:
+            # After 2 turns on the same topic: deterministically switch
+            memory_hint = self._pick_random_memory(speaker)
+            if memory_hint:
+                self._current_memory_category = self._detect_memory_category(memory_hint)
+                logger.info("Topic switch for %s (after %d turns) [%s]: %s", speaker_name, self._turns_on_current_topic, self._current_memory_category, memory_hint[:80])
+                self._turns_on_current_topic = 0
+            else:
+                self._turns_on_current_topic += 1
         else:
-            self._turns_since_last_recall += 1
+            # Continue on the same topic
+            self._turns_on_current_topic += 1
 
         # Generate message via AI
         text = await self.ai_client.generate_message(
@@ -389,6 +401,20 @@ class ConversationOrchestrator:
             self._used_topics = set(list(self._used_topics)[-15:])
 
         return chosen
+
+    @staticmethod
+    def _detect_memory_category(memory_hint: str) -> str:
+        """Detect the category of a memory hint based on its prefix."""
+        if memory_hint.startswith("вы обсуждали:"):
+            return "topic"
+        elif memory_hint.startswith("ты знаешь что:"):
+            return "fact"
+        elif memory_hint.startswith("ваша внутренняя шутка:"):
+            return "joke"
+        elif memory_hint.startswith("повторяющаяся ситуация:"):
+            return "situation"
+        else:
+            return "unknown"
 
     def _char_id_to_name(self, character_id: str) -> str:
         """Map a character_id to its name."""
