@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import random
+import re
 import uuid
 from typing import Optional
 
@@ -248,15 +249,50 @@ class ConversationOrchestrator:
                 "text": msg["text"],
             })
 
-        # Fetch random block of original messages for context
+        # Smart retrieval: find relevant messages from original history
         original_msgs = await get_original_messages(self.session_id)
         original_context = []
-        if original_msgs and len(original_msgs) > 30:
-            # Pick a random starting point and take 30 consecutive messages
-            start = random.randint(0, max(0, len(original_msgs) - 30))
-            original_context = original_msgs[start:start + 30]
-        elif original_msgs:
-            original_context = original_msgs
+
+        if original_msgs and conversation_history:
+            # Extract keywords from last 5 messages of current conversation
+            recent_texts = " ".join(m["text"] for m in conversation_history[-5:])
+            # Simple keyword extraction: words longer than 3 chars, exclude common words
+            stop_words = {"это", "что", "как", "так", "тоже", "уже", "ещё", "еще", "был", "была",
+                          "были", "будет", "может", "просто", "вообще", "ну", "да", "нет", "the",
+                          "and", "for", "with", "that", "this", "but", "not", "you", "all", "can",
+                          "her", "was", "one", "our", "out", "day", "had", "has", "his", "how", "its",
+                          "may", "new", "now", "old", "see", "way", "who", "did", "got", "let", "say",
+                          "she", "too", "use", "them", "than", "been", "have", "from", "they", "were",
+                          "which", "their", "what", "when", "your", "there", "would", "about", "could",
+                          "into", "than", "then", "come", "made", "after", "back", "well", "much",
+                          "good", "like", "just", "over", "such", "take", "know", "great", "think"}
+
+            words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', recent_texts)
+            keywords = {w.lower() for w in words if w.lower() not in stop_words}
+
+            if keywords:
+                # Score each original message by keyword overlap
+                scored = []
+                for msg in original_msgs:
+                    text = msg.get("text", "").lower()
+                    score = sum(1 for kw in keywords if kw in text)
+                    if score > 0:
+                        scored.append((score, msg))
+
+                # Sort by score descending, take top 20
+                scored.sort(key=lambda x: x[0], reverse=True)
+                original_context = [msg for _, msg in scored[:20]]
+
+                logger.info("Smart retrieval: %d keywords -> %d relevant messages found",
+                            len(keywords), len(original_context))
+
+        # Fallback: if no relevant messages found, take random block
+        if not original_context and original_msgs:
+            if len(original_msgs) > 30:
+                start = random.randint(0, max(0, len(original_msgs) - 30))
+                original_context = original_msgs[start:start + 30]
+            else:
+                original_context = original_msgs
 
         # Topic injection: every 2-3 turns, inject a random memory
         # Always inject on first turn to give conversation a starting topic
