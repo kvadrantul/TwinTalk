@@ -51,3 +51,10 @@ async def init_db():
             );
         """)
         await db.commit()
+
+        # Migration: add memories_json column to characters table if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN memories_json TEXT DEFAULT '{}'")
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass  # column already exists

@@ -9,7 +9,7 @@ from db.schema import init_db
 from bot.handlers import (
     start_handler, import_handler, pause_handler,
     resume_handler, speed_handler, stop_handler,
-    document_handler, text_handler,
+    document_handler, text_handler, regenerate_handler,
 )
 
 
@@ -32,6 +32,7 @@ def main() -> None:
     application.add_handler(CommandHandler("resume", resume_handler))
     application.add_handler(CommandHandler("speed", speed_handler))
     application.add_handler(CommandHandler("stop", stop_handler))
+    application.add_handler(CommandHandler("regenerate", regenerate_handler))
 
     # Document handler — JSON file uploads in private chat
     application.add_handler(MessageHandler(

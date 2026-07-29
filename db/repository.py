@@ -87,6 +87,7 @@ async def get_character(char_id: str) -> Optional[dict]:
     if row:
         row["profile_json"] = json.loads(row["profile_json"])
         row["few_shot_examples"] = json.loads(row["few_shot_examples"])
+        row["memories_json"] = json.loads(row.get("memories_json") or "{}")
     return row
 
 
@@ -97,7 +98,15 @@ async def get_characters_by_session(session_id: str) -> list[dict]:
     for row in rows:
         row["profile_json"] = json.loads(row["profile_json"])
         row["few_shot_examples"] = json.loads(row["few_shot_examples"])
+        row["memories_json"] = json.loads(row.get("memories_json") or "{}")
     return rows
+
+
+async def update_character_memories(char_id: str, memories_json: dict) -> None:
+    await _execute(
+        "UPDATE characters SET memories_json = ? WHERE id = ?",
+        (json.dumps(memories_json), char_id),
+    )
 
 
 # ── Chat History ──────────────────────────────────────────────────────────────

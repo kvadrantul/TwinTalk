@@ -310,6 +310,38 @@ async def _handle_token_b(update, context, token: str, user_id: int):
         
         await repository.update_session_characters(session_id, char_a_id, char_b_id)
         
+        # Extract memories from the full chat history
+        await update.message.reply_text("⏳ Анализирую переписку и создаю память персонажей...")
+        
+        from parser.memory_extractor import extract_memories
+        from db.repository import update_character_memories
+        
+        # Reconstruct ParsedMessage objects for memory extraction
+        all_parsed_messages = []
+        for m in parsed["messages"]:
+            all_parsed_messages.append(ParsedMessage(
+                id=len(all_parsed_messages),
+                sender_name=m["sender_name"],
+                sender_id="",
+                text=m["text"],
+                timestamp=datetime.fromisoformat(m["timestamp"]),
+            ))
+        
+        msgs_for_a = [m for m in all_parsed_messages if m.sender_name == name_a]
+        msgs_for_b = [m for m in all_parsed_messages if m.sender_name == name_b]
+        
+        try:
+            memories_a = await extract_memories(name_a, name_b, msgs_for_a)
+            await update_character_memories(char_a_id, memories_a)
+            
+            memories_b = await extract_memories(name_b, name_a, msgs_for_b)
+            await update_character_memories(char_b_id, memories_b)
+            
+            logger.info("Memories extracted for both characters")
+        except Exception as e:
+            logger.warning("Memory extraction failed (continuing without memories): %s", e)
+            # Continue without memories — not fatal
+        
         # Store session_id for later commands
         context.user_data["session_id"] = session_id
         await repository.set_user_state(user_id, STATE_READY, {"session_id": session_id})
@@ -332,3 +364,77 @@ async def _handle_token_b(update, context, token: str, user_id: int):
     except Exception as e:
         logger.exception("Error creating session")
         await update.message.reply_text(f"❌ Ошибка при создании персонажей: {e}")
+
+
+async def regenerate_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /regenerate — regenerate the last message."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    session_id = context.user_data.get("session_id")
+    if not session_id:
+        sessions = await repository.get_sessions_by_user(user.id)
+        for s in sessions:
+            if s.get("status") in ("running", "paused", "ready"):
+                session_id = s["id"]
+                break
+
+    if not session_id:
+        await update.message.reply_text("Нет активной симуляции.")
+        return
+
+    count = await repository.get_message_count(session_id)
+    if count == 0:
+        await update.message.reply_text("Нет сообщений для перегенерации.")
+        return
+
+    all_msgs = await repository.get_messages_by_session(session_id, limit=count, offset=0)
+    last_msg = all_msgs[-1]
+
+    characters = await repository.get_characters_by_session(session_id)
+    speaker = None
+    other = None
+    for c in characters:
+        if c["id"] == last_msg["character_id"]:
+            speaker = c
+            other = [x for x in characters if x["id"] != c["id"]][0]
+            break
+
+    if not speaker:
+        await update.message.reply_text("Не удалось найти персонажа.")
+        return
+
+    conversation_history = [
+        {"sender": m.get("sender_name", ""), "text": m["text"]}
+        for m in all_msgs[:-1]
+    ]
+
+    from ai.client import WaveSpeedClient
+    ai_client = WaveSpeedClient()
+
+    try:
+        new_text = await ai_client.generate_message(
+            character_name=speaker["name"],
+            other_name=other["name"],
+            profile=speaker["profile_json"],
+            conversation_history=conversation_history,
+            few_shot_examples=speaker["few_shot_examples"],
+            memories=speaker.get("memories_json"),
+        )
+
+        await repository._execute(
+            "UPDATE chat_history SET text = ? WHERE id = ?",
+            (new_text, last_msg["id"]),
+        )
+
+        from telegram_proxy.sender import TelegramBotProxy
+        proxy = TelegramBotProxy(speaker["token"])
+        try:
+            await proxy.send_message(chat.id, new_text)
+        finally:
+            await proxy.close()
+
+        await update.message.reply_text("🔄 Сообщение перегенерировано.")
+    except Exception as e:
+        logger.exception("Regenerate failed")
+        await update.message.reply_text(f"❌ Ошибка перегенерации: {e}")

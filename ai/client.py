@@ -27,6 +27,8 @@ class WaveSpeedClient:
         few_shot_examples: list[dict],
         temperature: float = 0.85,
         max_retries: int = 3,
+        memories: dict = None,
+        memory_hint: str = None,
     ) -> str:
         """
         Generate the next message for a character.
@@ -41,7 +43,11 @@ class WaveSpeedClient:
         Returns: clean message text string
         Raises: Exception after max_retries exhausted
         """
-        system_prompt = build_system_prompt(character_name, other_name, profile)
+        system_prompt = build_system_prompt(character_name, other_name, profile, memories=memories)
+
+        if memory_hint:
+            system_prompt += f"\n\n[Воспоминание: {memory_hint}]\nМожешь естественно упомянуть это если подходит, или игнорируй."
+
         conversation_messages = build_conversation_messages(
             conversation_history, character_name, other_name, few_shot_examples
         )

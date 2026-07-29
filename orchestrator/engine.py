@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import uuid
 from typing import Optional
 
@@ -42,6 +43,9 @@ class ConversationOrchestrator:
         self._next_speaker_index = 0  # 0 or 1
         self._pause_event = asyncio.Event()
         self._pause_event.set()  # not paused initially
+        self._turns_since_last_recall = 0
+        self._used_topics: set = set()  # track recently used topic indices to avoid repetition
+        self._next_turn_speaker = 0  # track who starts (0 = char A, 1 = char B)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
@@ -232,7 +236,7 @@ class ConversationOrchestrator:
         proxy: TelegramBotProxy = self.character_proxies[speaker_index]
 
         # Build conversation history from last messages
-        last_msgs = await get_last_messages(self.session_id, count=15)
+        last_msgs = await get_last_messages(self.session_id, count=50)
         conversation_history: list[dict] = []
         for msg in last_msgs:
             # Use the original sender name stored in chat_history,
@@ -243,6 +247,18 @@ class ConversationOrchestrator:
                 "text": msg["text"],
             })
 
+        # Topic injection: every 4-6 turns, inject a random memory
+        memory_hint = None
+        if self._turns_since_last_recall >= random.randint(4, 6):
+            memory_hint = self._pick_random_memory(speaker)
+            if memory_hint:
+                self._turns_since_last_recall = 0
+                logger.info("Memory injected for %s: %s", speaker_name, memory_hint[:80])
+            # Even if no memory found, reset counter
+            self._turns_since_last_recall = 0
+        else:
+            self._turns_since_last_recall += 1
+
         # Generate message via AI
         text = await self.ai_client.generate_message(
             character_name=speaker_name,
@@ -250,6 +266,8 @@ class ConversationOrchestrator:
             profile=profile,
             conversation_history=conversation_history,
             few_shot_examples=few_shot_examples,
+            memories=speaker.get("memories_json"),
+            memory_hint=memory_hint,
         )
 
         # Send via Telegram bot proxy
@@ -277,6 +295,51 @@ class ConversationOrchestrator:
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────
+
+    def _pick_random_memory(self, speaker: dict) -> Optional[str]:
+        """Pick a random memory topic/joke/fact that hasn't been used recently."""
+        memories = speaker.get("memories_json", {})
+        if not memories:
+            return None
+
+        candidates = []
+
+        # Collect topics
+        for topic in memories.get("topics", []):
+            theme = topic.get("theme", "")
+            summary = topic.get("summary", "")
+            if theme and theme not in self._used_topics:
+                candidates.append(f"вы обсуждали: {theme} — {summary}")
+
+        # Collect facts
+        for fact in memories.get("facts_about_each_other", []):
+            if fact not in self._used_topics:
+                candidates.append(f"ты знаешь что: {fact}")
+
+        # Collect jokes
+        for joke in memories.get("inside_jokes", []):
+            if joke not in self._used_topics:
+                candidates.append(f"ваша внутренняя шутка: {joke}")
+
+        # Collect recurring situations
+        for situation in memories.get("recurring_situations", []):
+            if situation not in self._used_topics:
+                candidates.append(f"повторяющаяся ситуация: {situation}")
+
+        if not candidates:
+            # All used, reset the used set and try again
+            self._used_topics.clear()
+            return self._pick_random_memory(speaker)  # retry once after clearing
+
+        chosen = random.choice(candidates)
+        self._used_topics.add(chosen)
+
+        # Keep used_topics from growing too large
+        if len(self._used_topics) > 30:
+            # Remove oldest entries (keep last 15)
+            self._used_topics = set(list(self._used_topics)[-15:])
+
+        return chosen
 
     def _char_id_to_name(self, character_id: str) -> str:
         """Map a character_id to its name."""
