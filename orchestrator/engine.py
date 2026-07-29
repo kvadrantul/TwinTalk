@@ -8,6 +8,7 @@ from db.repository import (
     get_session,
     get_characters_by_session,
     get_last_messages,
+    get_original_messages,
     add_message,
     update_session_status,
 )
@@ -247,9 +248,20 @@ class ConversationOrchestrator:
                 "text": msg["text"],
             })
 
-        # Topic injection: every 4-6 turns, inject a random memory
+        # Fetch random block of original messages for context
+        original_msgs = await get_original_messages(self.session_id)
+        original_context = []
+        if original_msgs and len(original_msgs) > 30:
+            # Pick a random starting point and take 30 consecutive messages
+            start = random.randint(0, max(0, len(original_msgs) - 30))
+            original_context = original_msgs[start:start + 30]
+        elif original_msgs:
+            original_context = original_msgs
+
+        # Topic injection: every 2-3 turns, inject a random memory
+        # Always inject on first turn to give conversation a starting topic
         memory_hint = None
-        if self._turns_since_last_recall >= random.randint(4, 6):
+        if self._current_turn == 0 or self._turns_since_last_recall >= random.randint(2, 3):
             memory_hint = self._pick_random_memory(speaker)
             if memory_hint:
                 self._turns_since_last_recall = 0
@@ -268,6 +280,7 @@ class ConversationOrchestrator:
             few_shot_examples=few_shot_examples,
             memories=speaker.get("memories_json"),
             memory_hint=memory_hint,
+            original_history=original_context,
         )
 
         # Send via Telegram bot proxy

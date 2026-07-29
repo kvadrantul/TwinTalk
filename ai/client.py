@@ -29,6 +29,7 @@ class WaveSpeedClient:
         max_retries: int = 3,
         memories: dict = None,
         memory_hint: str = None,
+        original_history: list[dict] = None,
     ) -> str:
         """
         Generate the next message for a character.
@@ -49,7 +50,8 @@ class WaveSpeedClient:
             system_prompt += f"\n\n[Воспоминание: {memory_hint}]\nМожешь естественно упомянуть это если подходит, или игнорируй."
 
         conversation_messages = build_conversation_messages(
-            conversation_history, character_name, other_name, few_shot_examples
+            conversation_history, character_name, other_name, few_shot_examples,
+            original_history=original_history,
         )
 
         messages = [

@@ -66,13 +66,15 @@ def build_system_prompt(character_name: str, other_name: str, profile: dict, mem
 
     prompt = (
         f"Ты — {character_name}. Ты переписываешься в Telegram с {other_name}.\n"
-        f"Генерируй СЛЕДУЮЩЕЕ сообщение, которое {character_name} отправил бы.\n"
         f"\n"
-        f"Твой стиль общения:\n"
-        f"    - Средняя длина сообщения: ~{avg_len} символов\n"
+        f"КРИТИЧЕСКИ ВАЖНО: ты ДОЛЖЕН копировать стиль общения {character_name}.\n"
+        f"Смотри на примеры реальных сообщений ниже — пиши ТАК ЖЕ.\n"
+        f"\n"
+        f"Параметры стиля:\n"
+        f"    - Длина: ~{avg_len} символов\n"
         f"    - Эмодзи: {emoji_desc}\n"
         f"    - Пунктуация: {punctuation}\n"
-        f"    - Стиль: {style_desc}"
+        f"    - Общий стиль: {style_desc}"
         f"{phrases_str}\n"
     )
 
@@ -93,9 +95,10 @@ def build_system_prompt(character_name: str, other_name: str, profile: dict, mem
         f"ПРАВИЛА:\n"
         f"    - Пиши ТОЛЬКО текст сообщения, без пояснений и кавычек\n"
         f"    - Без markdown, без форматирования\n"
-        f"    - 1-3 предложения, как в реальном чате\n"
-        f"    - Отвечай естественно на последнее сообщение собеседника\n"
-        f"    - Используй свойственный тебе стиль и эмодзи"
+        f"    - Копируй манеру речи из примеров: сленг, эмодзи, длину, пунктуацию\n"
+        f"    - Пиши как реальный человек в Telegram — неформально, живо\n"
+        f"    - Можешь спонтанно сменить тему, вспомнить что-то из прошлого, пошутить\n"
+        f"    - Не будь предсказуемым — реальные люди не отвечают шаблонно"
     )
 
     return prompt
@@ -106,20 +109,38 @@ def build_conversation_messages(
     character_name: str,
     other_name: str,
     few_shot_examples: list[dict],
+    original_history: list[dict] = None,
 ) -> list[dict]:
     """
     Build the messages array for the OpenAI chat completion API call.
 
     Structure:
     1. System message (from build_system_prompt)
-    2. Few-shot examples as alternating user/assistant messages
-    3. Last 10-15 conversation messages as context
+    2. (Optional) Original chat history as "past memories" block
+    3. Few-shot examples as alternating user/assistant messages
+    4. Last 50 conversation messages as context
 
     Each message in history has: {"sender": "name", "text": "message text"}
     """
     # Determine profile from context (passed separately to the caller)
     # Here we just build the message list; system prompt is added by the caller.
     messages: list[dict] = []
+
+    # Inject original chat history as "past memories" before few-shot examples
+    if original_history:
+        memory_lines = []
+        for msg in original_history:
+            sender = msg.get("sender_name", msg.get("sender", ""))
+            text = msg.get("text", "")
+            if sender and text:
+                memory_lines.append(f"{sender}: {text}")
+
+        if memory_lines:
+            memory_block = "\n".join(memory_lines[-30:])  # last 30 from original
+            messages.append({
+                "role": "system",
+                "content": f"Вот фрагменты ваших реальных прошлых разговоров, которые ты вспоминаешь:\n\n{memory_block}"
+            })
 
     # Few-shot examples (limit to 10 to leave room for larger context)
     for example in few_shot_examples[:10]:
