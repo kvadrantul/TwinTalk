@@ -245,6 +245,7 @@ class ConversationOrchestrator:
         need_new_seed = (
             self._current_turn == 0
             or self._turns_on_current_topic >= 4
+            or self._current_seed is None
         )
 
         seed_text = None
