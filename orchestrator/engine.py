@@ -290,14 +290,14 @@ class ConversationOrchestrator:
 
         if self._current_turn == 0:
             # First turn: always inject a topic to start the conversation
-            memory_hint = self._pick_random_memory(speaker)
+            memory_hint = await self._pick_topic_from_history(self.session_id, speaker)
             if memory_hint:
                 self._turns_on_current_topic = 0
                 self._current_memory_category = self._detect_memory_category(memory_hint)
                 logger.info("First turn topic for %s [%s]: %s", speaker_name, self._current_memory_category, memory_hint[:80])
         elif self._turns_on_current_topic >= 2:
-            # After 2 turns on the same topic: deterministically switch
-            memory_hint = self._pick_random_memory(speaker)
+            # After 2 turns on the same topic: switch to new topic from history
+            memory_hint = await self._pick_topic_from_history(self.session_id, speaker)
             if memory_hint:
                 self._current_memory_category = self._detect_memory_category(memory_hint)
                 logger.info("Topic switch for %s (after %d turns) [%s]: %s", speaker_name, self._turns_on_current_topic, self._current_memory_category, memory_hint[:80])
@@ -350,50 +350,54 @@ class ConversationOrchestrator:
 
     # ── Helpers ───────────────────────────────────────────────────────────
 
-    def _pick_random_memory(self, speaker: dict) -> Optional[str]:
-        """Pick a random memory topic/joke/fact that hasn't been used recently."""
+    async def _pick_topic_from_history(self, session_id: str, speaker: dict) -> Optional[str]:
+        """Pick a topic for conversation by searching the full chat history via FTS5.
+
+        Tries memories first (curated topics), then falls back to random messages
+        from the full original history stored in the database.
+        """
+        # Try memories first (curated, high-quality topics)
         memories = speaker.get("memories_json", {})
-        if not memories:
+        if memories:
+            candidates = []
+            for topic in memories.get("topics", []):
+                theme = topic.get("theme", "")
+                summary = topic.get("summary", "")
+                if theme and theme not in self._used_topics:
+                    candidates.append(f"вы обсуждали: {theme} — {summary}")
+            for joke in memories.get("inside_jokes", []):
+                if joke not in self._used_topics:
+                    candidates.append(f"ваша внутренняя шутка: {joke}")
+            for fact in memories.get("facts_about_each_other", []):
+                if fact not in self._used_topics:
+                    candidates.append(f"ты знаешь что: {fact}")
+
+            if candidates:
+                chosen = random.choice(candidates)
+                self._used_topics.add(chosen)
+                return chosen
+
+        # Fall back to random messages from the full history in DB
+        all_msgs = await get_original_messages(session_id)
+        if not all_msgs:
             return None
 
-        candidates = []
+        # Try a few random messages to find one with substance (>20 chars)
+        for _ in range(5):
+            msg = random.choice(all_msgs)
+            text = msg.get("text", "")
+            if len(text) > 20 and text not in self._used_topics:
+                sender = msg.get("sender_name", "")
+                self._used_topics.add(text)
+                if len(self._used_topics) > 50:
+                    self._used_topics = set(list(self._used_topics)[-25:])
+                return f"{sender} писал: {text}"
 
-        # Collect topics
-        for topic in memories.get("topics", []):
-            theme = topic.get("theme", "")
-            summary = topic.get("summary", "")
-            if theme and theme not in self._used_topics:
-                candidates.append(f"вы обсуждали: {theme} — {summary}")
-
-        # Collect facts
-        for fact in memories.get("facts_about_each_other", []):
-            if fact not in self._used_topics:
-                candidates.append(f"ты знаешь что: {fact}")
-
-        # Collect jokes
-        for joke in memories.get("inside_jokes", []):
-            if joke not in self._used_topics:
-                candidates.append(f"ваша внутренняя шутка: {joke}")
-
-        # Collect recurring situations
-        for situation in memories.get("recurring_situations", []):
-            if situation not in self._used_topics:
-                candidates.append(f"повторяющаяся ситуация: {situation}")
-
-        if not candidates:
-            # All used, reset the used set and try again
-            self._used_topics.clear()
-            return self._pick_random_memory(speaker)  # retry once after clearing
-
-        chosen = random.choice(candidates)
-        self._used_topics.add(chosen)
-
-        # Keep used_topics from growing too large
-        if len(self._used_topics) > 30:
-            # Remove oldest entries (keep last 15)
-            self._used_topics = set(list(self._used_topics)[-15:])
-
-        return chosen
+        # Last resort: any random message
+        msg = random.choice(all_msgs)
+        sender = msg.get("sender_name", "")
+        text = msg.get("text", "")
+        return f"{sender} писал: {text}"
 
     @staticmethod
     def _detect_memory_category(memory_hint: str) -> str:
