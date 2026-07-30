@@ -251,8 +251,8 @@ class ConversationOrchestrator:
         seed_text = None
         if need_new_seed:
             all_msgs = await get_original_messages(self.session_id)
-            # Filter to messages with >5 words
-            long_msgs = [m for m in all_msgs if len(m.get("text", "").split()) >= 5]
+            # Filter to messages with >3 words
+            long_msgs = [m for m in all_msgs if len(m.get("text", "").split()) >= 3]
             if long_msgs:
                 # Try up to 10 times to find one with >10 words
                 seed_msg = None
@@ -302,8 +302,11 @@ class ConversationOrchestrator:
                     len(keywords), len(original_context), len(chat_context),
                 )
 
-        # ── 3. Build conversation history (last 10 messages) ──────────
-        last_msgs = await get_last_messages(self.session_id, count=10)
+        # ── 3. Build conversation history ──────────
+        # On new topic: only 2 messages for minimal continuity
+        # On same topic: 10 messages for flow
+        history_count = 2 if need_new_seed else 10
+        last_msgs = await get_last_messages(self.session_id, count=history_count)
         conversation_history: list[dict] = []
         for msg in last_msgs:
             sender_name = msg.get("sender_name") or self._char_id_to_name(msg["character_id"])
@@ -318,13 +321,13 @@ class ConversationOrchestrator:
 
         for msg in chat_context:
             text = msg.get("text", "")
-            if len(text.split()) >= 5 and text not in seen_texts:
+            if len(text.split()) >= 3 and text not in seen_texts:
                 combined_original.append(msg)
                 seen_texts.add(text)
 
         for msg in original_context:
             text = msg.get("text", "")
-            if len(text.split()) >= 5 and text not in seen_texts:
+            if len(text.split()) >= 3 and text not in seen_texts:
                 combined_original.append(msg)
                 seen_texts.add(text)
 
