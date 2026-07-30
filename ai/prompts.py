@@ -158,4 +158,9 @@ def build_conversation_messages(
         elif sender == character_name:
             messages.append({"role": "assistant", "content": text})
 
+    # Ensure the last message is from 'user' (the other person),
+    # otherwise the API rejects it as "assistant prefill"
+    while messages and messages[-1]["role"] == "assistant":
+        messages.pop()
+
     return messages
