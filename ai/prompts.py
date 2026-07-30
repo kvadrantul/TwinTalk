@@ -137,7 +137,10 @@ def build_conversation_messages(
             memory_block = "\n".join(memory_lines)
             messages.append({
                 "role": "system",
-                "content": f"Вот фрагменты ваших реальных прошлых разговоров, которые ты вспоминаешь:\n\n{memory_block}"
+                "content": (
+                    f"Вот сообщения из вашей переписки. Выбери ОДНО из них как тему для разговора "
+                    f"и напиши ответ на его основе. Не повторяй дословно, а развив тему.\n\n{memory_block}"
+                )
             })
 
     # Few-shot examples (limit to 10 to leave room for larger context)

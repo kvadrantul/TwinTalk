@@ -263,27 +263,29 @@ class ConversationOrchestrator:
                 query = " OR ".join(keywords[:10])
 
                 # FTS5 search across ALL original messages
-                original_context = await search_original_messages(self.session_id, query, limit=50)
+                original_context = await search_original_messages(self.session_id, query, limit=30)
 
                 # FTS5 search across ALL generated chat history
-                chat_context = await search_chat_history_fts(self.session_id, query, limit=50)
+                chat_context = await search_chat_history_fts(self.session_id, query, limit=20)
 
                 logger.info("FTS5 search: %d keywords -> %d original, %d chat_history",
                              len(keywords), len(original_context), len(chat_context))
 
-        # Combine FTS5 results with recent messages, deduplicate
+        # Combine FTS5 results, filter out short messages (<5 words), deduplicate
         seen_texts = {m["text"] for m in conversation_history}
         combined_original = []
 
         for msg in chat_context:
-            if msg["text"] not in seen_texts:
+            text = msg.get("text", "")
+            if len(text.split()) >= 5 and text not in seen_texts:
                 combined_original.append(msg)
-                seen_texts.add(msg["text"])
+                seen_texts.add(text)
 
         for msg in original_context:
-            if msg["text"] not in seen_texts:
+            text = msg.get("text", "")
+            if len(text.split()) >= 5 and text not in seen_texts:
                 combined_original.append(msg)
-                seen_texts.add(msg["text"])
+                seen_texts.add(text)
 
         # Topic injection logic
         memory_hint = None
