@@ -116,15 +116,15 @@ async def init_db():
         # Backfill FTS tables with existing data (idempotent — triggers handle future inserts)
         try:
             await db.execute(
-                "INSERT INTO original_messages_fts (rowid, sender_name, text) "
+                "INSERT OR IGNORE INTO original_messages_fts (rowid, sender_name, text) "
                 "SELECT id, sender_name, text FROM original_messages"
             )
             await db.execute(
-                "INSERT INTO chat_history_fts (rowid, session_id, sender_name, text) "
+                "INSERT OR IGNORE INTO chat_history_fts (rowid, session_id, sender_name, text) "
                 "SELECT rowid, session_id, sender_name, text FROM chat_history"
             )
             await db.commit()
-        except aiosqlite.OperationalError:
+        except Exception:
             pass  # data already indexed or tables empty
 
         # Migration: add memories_json column to characters table if it doesn't exist
