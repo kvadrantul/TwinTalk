@@ -61,9 +61,24 @@ async def init_db():
         """)
         await db.commit()
 
+        # FTS5 full-text search for original messages
+        await db.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS original_messages_fts USING fts5(
+                sender_name, text, content='original_messages', content_rowid='id'
+            );
+        """)
+        await db.commit()
+
         # Migration: add memories_json column to characters table if it doesn't exist
         try:
             await db.execute("ALTER TABLE characters ADD COLUMN memories_json TEXT DEFAULT '{}'")
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass  # column already exists
+
+        # Migration: add style_analyzer column to characters table if it doesn't exist
+        try:
+            await db.execute("ALTER TABLE characters ADD COLUMN style_analyzer TEXT DEFAULT '{}'")
             await db.commit()
         except aiosqlite.OperationalError:
             pass  # column already exists

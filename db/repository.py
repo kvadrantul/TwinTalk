@@ -88,6 +88,7 @@ async def get_character(char_id: str) -> Optional[dict]:
         row["profile_json"] = json.loads(row["profile_json"])
         row["few_shot_examples"] = json.loads(row["few_shot_examples"])
         row["memories_json"] = json.loads(row.get("memories_json") or "{}")
+        row["style_analyzer"] = json.loads(row.get("style_analyzer") or "{}")
     return row
 
 
@@ -99,6 +100,7 @@ async def get_characters_by_session(session_id: str) -> list[dict]:
         row["profile_json"] = json.loads(row["profile_json"])
         row["few_shot_examples"] = json.loads(row["few_shot_examples"])
         row["memories_json"] = json.loads(row.get("memories_json") or "{}")
+        row["style_analyzer"] = json.loads(row.get("style_analyzer") or "{}")
     return rows
 
 
@@ -106,6 +108,13 @@ async def update_character_memories(char_id: str, memories_json: dict) -> None:
     await _execute(
         "UPDATE characters SET memories_json = ? WHERE id = ?",
         (json.dumps(memories_json), char_id),
+    )
+
+
+async def update_character_style_analyzer(char_id: str, style_analyzer: dict) -> None:
+    await _execute(
+        "UPDATE characters SET style_analyzer = ? WHERE id = ?",
+        (json.dumps(style_analyzer), char_id),
     )
 
 
@@ -196,4 +205,18 @@ async def delete_original_messages(session_id: str) -> None:
     await _execute(
         "DELETE FROM original_messages WHERE session_id = ?",
         (session_id,),
+    )
+
+
+async def search_original_messages(session_id: str, query: str, limit: int = 30) -> list[dict]:
+    """Full-text search across ALL original messages for this session."""
+    return await _execute(
+        """SELECT om.sender_name, om.text, om.timestamp
+           FROM original_messages_fts fts
+           JOIN original_messages om ON om.id = fts.rowid
+           WHERE original_messages_fts MATCH ? AND om.session_id = ?
+           ORDER BY rank
+           LIMIT ?""",
+        (query, session_id, limit),
+        fetch_all=True,
     )

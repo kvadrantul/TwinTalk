@@ -43,63 +43,59 @@ def build_memory_block(memories: dict) -> str:
     return "\n\n".join(parts)
 
 
-def build_system_prompt(character_name: str, other_name: str, profile: dict, memories: dict = None) -> str:
+def build_system_prompt(character_name: str, other_name: str, profile: dict, memories: dict = None, style_profile: dict = None) -> str:
     """
-    Build the system prompt for message generation.
+    Build system prompt for message generation.
 
-    Profile dict contains:
-    - avg_message_length: int
-    - emoji_description: str (e.g., "часто использует 🔥😂❤️")
-    - punctuation_habits: str (e.g., "чаще без точки в конце, иногда !")
-    - common_phrases: list[str]
-    - style_description: str (overall style summary)
+    style_profile dict (from style_analyzer) contains:
+    - communication_style: str
+    - typical_phrases: list[str]
+    - personality_traits: list[str]
+    - life_context: str
+    - relationship_with_other: str
+    - never_says: list[str]
     """
-    avg_len = profile.get("avg_message_length", 50)
-    emoji_desc = profile.get("emoji_description", "использует эмодзи умеренно")
-    punctuation = profile.get("punctuation_habits", "стандартная пунктуация")
-    common_phrases = profile.get("common_phrases", [])
-    style_desc = profile.get("style_description", "обычный стиль общения")
+    prompt = f"Ты — {character_name}. Ты переписываешься в Telegram с {other_name}.\n"
 
-    phrases_str = ""
-    if common_phrases:
-        phrases_str = "\n    - Частые выражения: " + ", ".join(f'"{p}"' for p in common_phrases)
+    # Deep style profile from style_analyzer
+    if style_profile:
+        style = style_profile.get("communication_style", "")
+        if style:
+            prompt += f"\nТвой стиль общения:\n{style}\n"
 
-    prompt = (
-        f"Ты — {character_name}. Ты переписываешься в Telegram с {other_name}.\n"
-        f"\n"
-        f"КРИТИЧЕСКИ ВАЖНО: ты ДОЛЖЕН копировать стиль общения {character_name}.\n"
-        f"Смотри на примеры реальных сообщений ниже — пиши ТАК ЖЕ.\n"
-        f"\n"
-        f"Параметры стиля:\n"
-        f"    - Длина: ~{avg_len} символов\n"
-        f"    - Эмодзи: {emoji_desc}\n"
-        f"    - Пунктуация: {punctuation}\n"
-        f"    - Общий стиль: {style_desc}"
-        f"{phrases_str}\n"
-    )
+        phrases = style_profile.get("typical_phrases", [])
+        if phrases:
+            prompt += f"\nТипичные фразы: {', '.join('\"' + p + '\"' for p in phrases[:15])}\n"
 
-    # Append memory block if provided
+        traits = style_profile.get("personality_traits", [])
+        if traits:
+            prompt += f"Черты характера: {', '.join(traits)}\n"
+
+        life = style_profile.get("life_context", "")
+        if life:
+            prompt += f"\nКонтекст жизни: {life}\n"
+
+        relationship = style_profile.get("relationship_with_other", "")
+        if relationship:
+            prompt += f"Отношения с {other_name}: {relationship}\n"
+
+        never = style_profile.get("never_says", [])
+        if never:
+            prompt += f"\nНИКОГДА не говори: {', '.join(never[:10])}\n"
+
+    # Memories (topics, facts, jokes)
     if memories:
         memory_block = build_memory_block(memories)
         if memory_block:
-            prompt += (
-                f"\nПамять о ваших реальных разговорах:\n"
-                f"{memory_block}\n"
-                f"\n"
-                f"Иногда ты можешь спонтанно вспомнить что-то из этого и поднять тему — так делают реальные люди.\n"
-                f"Но не упоминай это каждый раз — только когда это естественно подходит.\n"
-            )
+            prompt += f"\n{memory_block}\n"
 
     prompt += (
-        f"\n"
-        f"ПРАВИЛА:\n"
-        f"    - Пиши ТОЛЬКО текст сообщения, без пояснений и кавычек\n"
-        f"    - Без markdown, без форматирования\n"
-        f"    - Копируй манеру речи из примеров: сленг, эмодзи, длину, пунктуацию\n"
-        f"    - Пиши как реальный человек в Telegram — неформально, живо\n"
-        f"    - Если видишь [Воспоминание] — естественно вплети это в разговор\n"
-        f"    - Можешь сам сменить тему когда текущая исчерпана — через связку, как реальные люди\n"
-        f"    - Не будь предсказуемым — реальные люди не отвечают шаблонно"
+        f"\nПРАВИЛА:\n"
+        f"Пиши ТОЛЬКО текст сообщения. Без пояснений, без кавычек, без markdown.\n"
+        f"Копируй свой стиль из примеров выше.\n"
+        f"Отвечай только на основе того что реально было в вашей переписке.\n"
+        f"Не выдумывай события которых не было.\n"
+        f"Можешь вспомнить что-то из прошлого, пошутить внутреннюю шутку, спросить о чём-то."
     )
 
     return prompt

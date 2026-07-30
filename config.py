@@ -11,6 +11,6 @@ WAVESPEED_API_KEY: str = os.environ.get(
 WAVESPEED_BASE_URL: str = os.environ.get(
     "WAVESPEED_BASE_URL", "https://llm.wavespeed.ai/v1"
 )
-WAVESPEED_MODEL: str = os.environ.get("WAVESPEED_MODEL", "openai/gpt-4o-mini")
+WAVESPEED_MODEL: str = os.environ.get("WAVESPEED_MODEL", "anthropic/claude-sonnet-5")
 
 DB_PATH: str = os.environ.get("DB_PATH", "data/app.db")

@@ -346,6 +346,23 @@ async def _handle_token_b(update, context, token: str, user_id: int):
             logger.warning("Memory extraction failed (continuing without memories): %s", e)
             # Continue without memories — not fatal
         
+        # Style analysis (deep profile via claude-sonnet-5)
+        await update.message.reply_text("⏳ Анализирую стиль общения...")
+        
+        from parser.style_analyzer import analyze_style
+        from db.repository import update_character_style_analyzer
+        
+        try:
+            style_a = await analyze_style(name_a, name_b, msgs_a, all_messages=all_messages)
+            await update_character_style_analyzer(char_a_id, style_a)
+            
+            style_b = await analyze_style(name_b, name_a, msgs_b, all_messages=all_messages)
+            await update_character_style_analyzer(char_b_id, style_b)
+            
+            logger.info("Style analysis complete for both characters")
+        except Exception as e:
+            logger.warning("Style analysis failed (continuing without): %s", e)
+        
         # Store session_id for later commands
         context.user_data["session_id"] = session_id
         await repository.set_user_state(user_id, STATE_READY, {"session_id": session_id})
@@ -506,6 +523,23 @@ async def refresh_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         memories_b = await extract_memories(name_b, name_a, msgs_b)
         await update_character_memories(characters[1]["id"], memories_b)
+        
+        # Style analysis
+        await update.message.reply_text("⏳ Анализирую стиль общения...")
+        
+        from parser.style_analyzer import analyze_style
+        from db.repository import update_character_style_analyzer
+        
+        try:
+            style_a = await analyze_style(name_a, name_b, msgs_a, all_messages=all_messages)
+            await update_character_style_analyzer(characters[0]["id"], style_a)
+            
+            style_b = await analyze_style(name_b, name_a, msgs_b, all_messages=all_messages)
+            await update_character_style_analyzer(characters[1]["id"], style_b)
+            
+            logger.info("Style re-analysis complete")
+        except Exception as e:
+            logger.warning("Style re-analysis failed: %s", e)
         
         await update.message.reply_text("✅ Память персонажей обновлена!")
     except Exception as e:

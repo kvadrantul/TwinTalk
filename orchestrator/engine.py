@@ -10,6 +10,7 @@ from db.repository import (
     get_characters_by_session,
     get_last_messages,
     get_original_messages,
+    search_original_messages,
     add_message,
     update_session_status,
 )
@@ -251,50 +252,26 @@ class ConversationOrchestrator:
                 "text": msg["text"],
             })
 
-        # Smart retrieval: find relevant messages from original history
-        original_msgs = await get_original_messages(self.session_id)
+        # FTS5 full-text search across ALL original messages
         original_context = []
-
-        if original_msgs and conversation_history:
-            # Extract keywords from last 5 messages of current conversation
-            recent_texts = " ".join(m["text"] for m in conversation_history[-5:])
-            # Simple keyword extraction: words longer than 3 chars, exclude common words
+        if conversation_history:
+            recent_text = " ".join(m["text"] for m in conversation_history[-5:])
             stop_words = {"это", "что", "как", "так", "тоже", "уже", "ещё", "еще", "был", "была",
-                          "были", "будет", "может", "просто", "вообще", "ну", "да", "нет", "the",
-                          "and", "for", "with", "that", "this", "but", "not", "you", "all", "can",
-                          "her", "was", "one", "our", "out", "day", "had", "has", "his", "how", "its",
-                          "may", "new", "now", "old", "see", "way", "who", "did", "got", "let", "say",
-                          "she", "too", "use", "them", "than", "been", "have", "from", "they", "were",
-                          "which", "their", "what", "when", "your", "there", "would", "about", "could",
-                          "into", "than", "then", "come", "made", "after", "back", "well", "much",
-                          "good", "like", "just", "over", "such", "take", "know", "great", "think"}
-
-            words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', recent_texts)
-            keywords = {w.lower() for w in words if w.lower() not in stop_words}
+                          "были", "будет", "может", "просто", "вообще", "ну", "да", "нет"}
+            words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', recent_text)
+            keywords = [w for w in set(w.lower() for w in words) if w not in stop_words]
 
             if keywords:
-                # Score each original message by keyword overlap
-                scored = []
-                for msg in original_msgs:
-                    text = msg.get("text", "").lower()
-                    score = sum(1 for kw in keywords if kw in text)
-                    if score > 0:
-                        scored.append((score, msg))
+                query = " OR ".join(keywords[:10])
+                original_context = await search_original_messages(self.session_id, query, limit=30)
+                logger.info("FTS5 search: %d keywords -> %d messages", len(keywords), len(original_context))
 
-                # Sort by score descending, take top 20
-                scored.sort(key=lambda x: x[0], reverse=True)
-                original_context = [msg for _, msg in scored[:20]]
-
-                logger.info("Smart retrieval: %d keywords -> %d relevant messages found",
-                            len(keywords), len(original_context))
-
-        # Fallback: if no relevant messages found, take random block
-        if not original_context and original_msgs:
-            if len(original_msgs) > 30:
-                start = random.randint(0, max(0, len(original_msgs) - 30))
-                original_context = original_msgs[start:start + 30]
-            else:
-                original_context = original_msgs
+        # Fallback: random block
+        if not original_context:
+            all_msgs = await get_original_messages(self.session_id)
+            if all_msgs:
+                start = random.randint(0, max(0, len(all_msgs) - 30))
+                original_context = all_msgs[start:start + 30]
 
         # Topic injection logic
         memory_hint = None
@@ -319,6 +296,9 @@ class ConversationOrchestrator:
             # Continue on the same topic
             self._turns_on_current_topic += 1
 
+        # Extract style_profile from speaker character data
+        style_profile = speaker.get("style_analyzer") or speaker.get("style_analyzer_json") or {}
+
         # Generate message via AI
         text = await self.ai_client.generate_message(
             character_name=speaker_name,
@@ -329,6 +309,7 @@ class ConversationOrchestrator:
             memories=speaker.get("memories_json"),
             memory_hint=memory_hint,
             original_history=original_context,
+            style_profile=style_profile,
         )
 
         # Send via Telegram bot proxy
