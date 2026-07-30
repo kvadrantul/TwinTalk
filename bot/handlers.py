@@ -36,7 +36,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Try to find existing session for this user
         sessions = await repository.get_sessions_by_user(user.id)
         for s in sessions:
-            if s.get("status") in ("idle", "ready"):
+            if s.get("status") in ("idle", "ready", "stopped", "paused"):
                 session_id = s["id"]
                 break
         
