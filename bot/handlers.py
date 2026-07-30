@@ -470,7 +470,7 @@ async def refresh_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not session_id:
         sessions = await repository.get_sessions_by_user(user.id)
         for s in sessions:
-            if s.get("status") in ("idle", "ready", "running", "paused"):
+            if s.get("status") in ("idle", "ready", "running", "paused", "stopped"):
                 session_id = s["id"]
                 break
     
