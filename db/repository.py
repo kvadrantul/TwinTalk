@@ -208,6 +208,20 @@ async def delete_original_messages(session_id: str) -> None:
     )
 
 
+async def search_chat_history_fts(session_id: str, query: str, limit: int = 50) -> list[dict]:
+    """Full-text search across ALL generated chat history for this session."""
+    return await _execute(
+        """SELECT ch.sender_name, ch.text, ch.turn_number
+           FROM chat_history_fts fts
+           JOIN chat_history ch ON ch.rowid = fts.rowid
+           WHERE chat_history_fts MATCH ? AND ch.session_id = ?
+           ORDER BY rank
+           LIMIT ?""",
+        (query, session_id, limit),
+        fetch_all=True,
+    )
+
+
 async def search_original_messages(session_id: str, query: str, limit: int = 30) -> list[dict]:
     """Full-text search across ALL original messages for this session."""
     return await _execute(

@@ -1,12 +1,14 @@
 """
-Deep style analysis using LLM. Reads the ENTIRE chat history and creates
+Deep style analysis using LLM. Reads the chat history and creates
 a comprehensive style profile for a character.
+
+Sends ONE request to the model with maximum messages that fit within
+the context limit (~180K tokens). No chunking.
 """
 
 import json
 import logging
 import re
-from typing import Optional
 
 import openai
 from config import WAVESPEED_API_KEY, WAVESPEED_BASE_URL, WAVESPEED_MODEL
@@ -15,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 _client = openai.AsyncOpenAI(base_url=WAVESPEED_BASE_URL, api_key=WAVESPEED_API_KEY)
 _model = WAVESPEED_MODEL
+
+# ~3 characters per token for Russian text; leave ~20K tokens for system prompt + response
+_TOKEN_CONTEXT_LIMIT = 180_000
+_CHARS_PER_TOKEN = 3
+_RESERVE_TOKENS = 20_000
+
+# Usable token budget for chat text per LLM call
+_MAX_CHAT_TOKENS = _TOKEN_CONTEXT_LIMIT - _RESERVE_TOKENS  # 160_000
 
 _EMPTY_PROFILE = {
     "character": "",
@@ -28,6 +38,11 @@ _EMPTY_PROFILE = {
 }
 
 
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~3 characters = 1 token for Russian text."""
+    return len(text) // _CHARS_PER_TOKEN
+
+
 async def analyze_style(
     participant_name: str,
     other_name: str,
@@ -35,9 +50,10 @@ async def analyze_style(
     all_messages: list = None,  # ALL messages from both people (for context)
 ) -> dict:
     """
-    LLM reads ALL messages and creates a deep style profile.
+    LLM reads as many messages as fit in the context window and creates a deep style profile.
 
-    The entire chat history is sent in ONE API call (claude-sonnet-5 has 1M context).
+    ONE request to the model. No chunking. If the chat is too large, messages are
+    trimmed from the beginning (keeping the most recent ones).
 
     Returns dict with:
     - character: who this person is
@@ -54,11 +70,36 @@ async def analyze_style(
             all_messages = messages
 
         # Format ALL messages as a chat log
-        chat_lines = []
+        chat_lines: list[str] = []
         for msg in all_messages:
             ts = msg.timestamp.strftime("%Y-%m-%d %H:%M")
             chat_lines.append(f"[{ts}] {msg.sender_name}: {msg.text}")
+
+        total_chars = sum(len(line) + 1 for line in chat_lines)
+        total_tokens = total_chars // _CHARS_PER_TOKEN
+        max_chars = _MAX_CHAT_TOKENS * _CHARS_PER_TOKEN
+
+        # Trim from the beginning if needed (keep the most recent messages)
+        trimmed_count = 0
+        while total_chars > max_chars and chat_lines:
+            removed = chat_lines.pop(0)
+            total_chars -= len(removed) + 1
+            trimmed_count += 1
+
         chat_text = "\n".join(chat_lines)
+        used_tokens = _estimate_tokens(chat_text)
+
+        if trimmed_count > 0:
+            logger.info(
+                "Analyzing style for %s: %d/%d messages (~%d tokens, trimmed %d oldest messages)",
+                participant_name, len(chat_lines), len(all_messages),
+                used_tokens, trimmed_count,
+            )
+        else:
+            logger.info(
+                "Analyzing style for %s from %d messages (~%d tokens, all fit)",
+                participant_name, len(all_messages), used_tokens,
+            )
 
         prompt = f"""Проанализируй переписку между {participant_name} и {other_name}.
 
@@ -87,9 +128,6 @@ async def analyze_style(
 
 Переписка:
 {chat_text}"""
-
-        logger.info("Analyzing style for %s from %d messages (full history)",
-                     participant_name, len(all_messages))
 
         response = await _client.chat.completions.create(
             model=_model,

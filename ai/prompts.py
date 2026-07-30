@@ -116,7 +116,7 @@ def build_conversation_messages(
     1. System message (from build_system_prompt)
     2. (Optional) Original chat history as "past memories" block
     3. Few-shot examples as alternating user/assistant messages
-    4. Last 50 conversation messages as context
+    4. All conversation messages as context
 
     Each message in history has: {"sender": "name", "text": "message text"}
     """
@@ -134,7 +134,7 @@ def build_conversation_messages(
                 memory_lines.append(f"{sender}: {text}")
 
         if memory_lines:
-            memory_block = "\n".join(memory_lines[-30:])  # last 30 from original
+            memory_block = "\n".join(memory_lines)
             messages.append({
                 "role": "system",
                 "content": f"Вот фрагменты ваших реальных прошлых разговоров, которые ты вспоминаешь:\n\n{memory_block}"
@@ -149,9 +149,8 @@ def build_conversation_messages(
         elif sender == character_name:
             messages.append({"role": "assistant", "content": text})
 
-    # Last 50 conversation messages for context
-    recent = conversation_history[-50:]
-    for msg in recent:
+    # Conversation messages for context
+    for msg in conversation_history:
         sender = msg.get("sender", "")
         text = msg.get("text", "")
         if sender == other_name:

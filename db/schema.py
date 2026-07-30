@@ -66,8 +66,66 @@ async def init_db():
             CREATE VIRTUAL TABLE IF NOT EXISTS original_messages_fts USING fts5(
                 sender_name, text, content='original_messages', content_rowid='id'
             );
+
+            -- Triggers to keep original_messages_fts in sync
+            CREATE TRIGGER IF NOT EXISTS original_messages_ai AFTER INSERT ON original_messages BEGIN
+                INSERT INTO original_messages_fts (rowid, sender_name, text)
+                VALUES (new.id, new.sender_name, new.text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS original_messages_ad AFTER DELETE ON original_messages BEGIN
+                INSERT INTO original_messages_fts (original_messages_fts, rowid, sender_name, text)
+                VALUES ('delete', old.id, old.sender_name, old.text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS original_messages_au AFTER UPDATE ON original_messages BEGIN
+                INSERT INTO original_messages_fts (original_messages_fts, rowid, sender_name, text)
+                VALUES ('delete', old.id, old.sender_name, old.text);
+                INSERT INTO original_messages_fts (rowid, sender_name, text)
+                VALUES (new.id, new.sender_name, new.text);
+            END;
         """)
         await db.commit()
+
+        # FTS5 full-text search for chat history (standalone — not content-linked
+        # because chat_history uses TEXT PRIMARY KEY with implicit rowid)
+        await db.executescript("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS chat_history_fts USING fts5(
+                session_id, sender_name, text
+            );
+
+            CREATE TRIGGER IF NOT EXISTS chat_history_ai AFTER INSERT ON chat_history BEGIN
+                INSERT INTO chat_history_fts (rowid, session_id, sender_name, text)
+                VALUES (new.rowid, new.session_id, new.sender_name, new.text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chat_history_ad AFTER DELETE ON chat_history BEGIN
+                INSERT INTO chat_history_fts (chat_history_fts, rowid, session_id, sender_name, text)
+                VALUES ('delete', old.rowid, old.session_id, old.sender_name, old.text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS chat_history_au AFTER UPDATE ON chat_history BEGIN
+                INSERT INTO chat_history_fts (chat_history_fts, rowid, session_id, sender_name, text)
+                VALUES ('delete', old.rowid, old.session_id, old.sender_name, old.text);
+                INSERT INTO chat_history_fts (rowid, session_id, sender_name, text)
+                VALUES (new.rowid, new.session_id, new.sender_name, new.text);
+            END;
+        """)
+        await db.commit()
+
+        # Backfill FTS tables with existing data (idempotent — triggers handle future inserts)
+        try:
+            await db.execute(
+                "INSERT INTO original_messages_fts (rowid, sender_name, text) "
+                "SELECT id, sender_name, text FROM original_messages"
+            )
+            await db.execute(
+                "INSERT INTO chat_history_fts (rowid, session_id, sender_name, text) "
+                "SELECT rowid, session_id, sender_name, text FROM chat_history"
+            )
+            await db.commit()
+        except aiosqlite.OperationalError:
+            pass  # data already indexed or tables empty
 
         # Migration: add memories_json column to characters table if it doesn't exist
         try:

@@ -6,11 +6,10 @@ import uuid
 from typing import Optional
 
 from db.repository import (
-    get_session,
     get_characters_by_session,
     get_last_messages,
-    get_original_messages,
     search_original_messages,
+    search_chat_history_fts,
     add_message,
     update_session_status,
 )
@@ -240,22 +239,21 @@ class ConversationOrchestrator:
         few_shot_examples: list[dict] = speaker["few_shot_examples"]
         proxy: TelegramBotProxy = self.character_proxies[speaker_index]
 
-        # Build conversation history from last messages
-        last_msgs = await get_last_messages(self.session_id, count=50)
+        # Build conversation history from last 15 messages (for conversational continuity)
+        last_msgs = await get_last_messages(self.session_id, count=15)
         conversation_history: list[dict] = []
         for msg in last_msgs:
-            # Use the original sender name stored in chat_history,
-            # NOT the character name from DB (they may differ)
             sender_name = msg.get("sender_name") or self._char_id_to_name(msg["character_id"])
             conversation_history.append({
                 "sender": sender_name,
                 "text": msg["text"],
             })
 
-        # FTS5 full-text search across ALL original messages
+        # Extract keywords from last 15 messages for FTS5 search
         original_context = []
+        chat_context = []
         if conversation_history:
-            recent_text = " ".join(m["text"] for m in conversation_history[-5:])
+            recent_text = " ".join(m["text"] for m in conversation_history)
             stop_words = {"это", "что", "как", "так", "тоже", "уже", "ещё", "еще", "был", "была",
                           "были", "будет", "может", "просто", "вообще", "ну", "да", "нет"}
             words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', recent_text)
@@ -263,15 +261,29 @@ class ConversationOrchestrator:
 
             if keywords:
                 query = " OR ".join(keywords[:10])
-                original_context = await search_original_messages(self.session_id, query, limit=30)
-                logger.info("FTS5 search: %d keywords -> %d messages", len(keywords), len(original_context))
 
-        # Fallback: random block
-        if not original_context:
-            all_msgs = await get_original_messages(self.session_id)
-            if all_msgs:
-                start = random.randint(0, max(0, len(all_msgs) - 30))
-                original_context = all_msgs[start:start + 30]
+                # FTS5 search across ALL original messages
+                original_context = await search_original_messages(self.session_id, query, limit=50)
+
+                # FTS5 search across ALL generated chat history
+                chat_context = await search_chat_history_fts(self.session_id, query, limit=50)
+
+                logger.info("FTS5 search: %d keywords -> %d original, %d chat_history",
+                             len(keywords), len(original_context), len(chat_context))
+
+        # Combine FTS5 results with recent messages, deduplicate
+        seen_texts = {m["text"] for m in conversation_history}
+        combined_original = []
+
+        for msg in chat_context:
+            if msg["text"] not in seen_texts:
+                combined_original.append(msg)
+                seen_texts.add(msg["text"])
+
+        for msg in original_context:
+            if msg["text"] not in seen_texts:
+                combined_original.append(msg)
+                seen_texts.add(msg["text"])
 
         # Topic injection logic
         memory_hint = None
@@ -308,7 +320,7 @@ class ConversationOrchestrator:
             few_shot_examples=few_shot_examples,
             memories=speaker.get("memories_json"),
             memory_hint=memory_hint,
-            original_history=original_context,
+            original_history=combined_original,
             style_profile=style_profile,
         )
 
