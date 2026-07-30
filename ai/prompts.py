@@ -65,7 +65,8 @@ def build_system_prompt(character_name: str, other_name: str, profile: dict, mem
 
         phrases = style_profile.get("typical_phrases", [])
         if phrases:
-            prompt += f"\nТипичные фразы: {', '.join('\"' + p + '\"' for p in phrases[:15])}\n"
+            quoted = [chr(34) + p + chr(34) for p in phrases[:15]]
+            prompt += f"\nТипичные фразы: {', '.join(quoted)}\n"
 
         traits = style_profile.get("personality_traits", [])
         if traits:
