@@ -8,6 +8,7 @@ from typing import Optional
 from db.repository import (
     get_characters_by_session,
     get_last_messages,
+    get_original_messages,
     search_original_messages,
     search_chat_history_fts,
     add_message,
@@ -47,8 +48,7 @@ class ConversationOrchestrator:
         self._pause_event.set()  # not paused initially
         self._turns_since_last_recall = 0
         self._turns_on_current_topic = 0
-        self._current_memory_category = None  # track which memory category is currently being used
-        self._used_topics: set = set()  # track recently used topic indices to avoid repetition
+        self._current_seed: Optional[str] = None
         self._next_turn_speaker = 0  # track who starts (0 = char A, 1 = char B)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
@@ -223,12 +223,13 @@ class ConversationOrchestrator:
 
         1. Get speaker character data (name, profile_json, few_shot_examples, token, id)
         2. Get other character name
-        3. Get last 15 messages from DB as conversation history
-           Format: [{"sender": "name", "text": "message"}, ...]
-        4. Call ai_client.generate_message(...)
-        5. Send via character proxy
-        6. Save to DB with uuid message id
-        7. Log the message
+        3. Pick a random seed message from full original history (>5 words)
+        4. FTS5-search by seed keywords for relevant context
+        5. Get last 10 messages as conversation_history (for continuity)
+        6. Call ai_client.generate_message(...)
+        7. Send via character proxy
+        8. Save to DB with uuid message id
+        9. Log the message
         """
         speaker = self.characters[speaker_index]
         other = self.characters[1 - speaker_index]
@@ -239,8 +240,69 @@ class ConversationOrchestrator:
         few_shot_examples: list[dict] = speaker["few_shot_examples"]
         proxy: TelegramBotProxy = self.character_proxies[speaker_index]
 
-        # Build conversation history from last 15 messages (for conversational continuity)
-        last_msgs = await get_last_messages(self.session_id, count=15)
+        # ── 1. Pick seed ──────────────────────────────────────────────
+        # Decide whether to pick a new seed this turn
+        need_new_seed = (
+            self._current_turn == 0
+            or self._turns_on_current_topic >= 4
+        )
+
+        seed_text = None
+        if need_new_seed:
+            all_msgs = await get_original_messages(self.session_id)
+            # Filter to messages with >5 words
+            long_msgs = [m for m in all_msgs if len(m.get("text", "").split()) >= 5]
+            if long_msgs:
+                # Try up to 10 times to find one with >10 words
+                seed_msg = None
+                for _ in range(10):
+                    candidate = random.choice(long_msgs)
+                    if len(candidate.get("text", "").split()) > 10:
+                        seed_msg = candidate
+                        break
+                if seed_msg is None:
+                    seed_msg = random.choice(long_msgs)
+                seed_text = seed_msg.get("text", "")
+                logger.info(
+                    "Seed selected for session %s (%d words): %s",
+                    self.session_id,
+                    len(seed_text.split()),
+                    seed_text[:120],
+                )
+            self._turns_on_current_topic = 0
+        else:
+            # Reuse previous seed (stored on the instance)
+            seed_text = self._current_seed
+            self._turns_on_current_topic += 1
+
+        # Persist seed for reuse on non-switch turns
+        self._current_seed = seed_text
+
+        # ── 2. FTS5 search by seed keywords ───────────────────────────
+        original_context = []
+        chat_context = []
+        if seed_text:
+            stop_words = {"это", "что", "как", "так", "тоже", "уже", "ещё", "еще", "был", "была",
+                          "были", "будет", "может", "просто", "вообще", "ну", "да", "нет"}
+            words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', seed_text)
+            keywords = [w for w in set(w.lower() for w in words) if w not in stop_words]
+
+            if keywords:
+                query = " OR ".join(keywords[:10])
+
+                # FTS5 search across ALL original messages
+                original_context = await search_original_messages(self.session_id, query, limit=20)
+
+                # FTS5 search across ALL generated chat history
+                chat_context = await search_chat_history_fts(self.session_id, query, limit=15)
+
+                logger.info(
+                    "FTS5 search from seed: %d keywords -> %d original, %d chat_history",
+                    len(keywords), len(original_context), len(chat_context),
+                )
+
+        # ── 3. Build conversation history (last 10 messages) ──────────
+        last_msgs = await get_last_messages(self.session_id, count=10)
         conversation_history: list[dict] = []
         for msg in last_msgs:
             sender_name = msg.get("sender_name") or self._char_id_to_name(msg["character_id"])
@@ -248,28 +310,6 @@ class ConversationOrchestrator:
                 "sender": sender_name,
                 "text": msg["text"],
             })
-
-        # Extract keywords from last 15 messages for FTS5 search
-        original_context = []
-        chat_context = []
-        if conversation_history:
-            recent_text = " ".join(m["text"] for m in conversation_history)
-            stop_words = {"это", "что", "как", "так", "тоже", "уже", "ещё", "еще", "был", "была",
-                          "были", "будет", "может", "просто", "вообще", "ну", "да", "нет"}
-            words = re.findall(r'[а-яА-ЯёЁa-zA-Z]{4,}', recent_text)
-            keywords = [w for w in set(w.lower() for w in words) if w not in stop_words]
-
-            if keywords:
-                query = " OR ".join(keywords[:10])
-
-                # FTS5 search across ALL original messages
-                original_context = await search_original_messages(self.session_id, query, limit=30)
-
-                # FTS5 search across ALL generated chat history
-                chat_context = await search_chat_history_fts(self.session_id, query, limit=20)
-
-                logger.info("FTS5 search: %d keywords -> %d original, %d chat_history",
-                             len(keywords), len(original_context), len(chat_context))
 
         # Combine FTS5 results, filter out short messages (<5 words), deduplicate
         seen_texts = {m["text"] for m in conversation_history}
@@ -287,28 +327,16 @@ class ConversationOrchestrator:
                 combined_original.append(msg)
                 seen_texts.add(text)
 
-        # Topic injection logic
-        memory_hint = None
+        logger.info(
+            "Context for session %s: seed='%s', combined_original=%d msgs, conversation_history=%d msgs",
+            self.session_id,
+            (seed_text or "")[:60],
+            len(combined_original),
+            len(conversation_history),
+        )
 
-        if self._current_turn == 0:
-            # First turn: always inject a topic to start the conversation
-            memory_hint = await self._pick_topic_from_history(self.session_id, speaker)
-            if memory_hint:
-                self._turns_on_current_topic = 0
-                self._current_memory_category = self._detect_memory_category(memory_hint)
-                logger.info("First turn topic for %s [%s]: %s", speaker_name, self._current_memory_category, memory_hint[:80])
-        elif self._turns_on_current_topic >= 2:
-            # After 2 turns on the same topic: switch to new topic from history
-            memory_hint = await self._pick_topic_from_history(self.session_id, speaker)
-            if memory_hint:
-                self._current_memory_category = self._detect_memory_category(memory_hint)
-                logger.info("Topic switch for %s (after %d turns) [%s]: %s", speaker_name, self._turns_on_current_topic, self._current_memory_category, memory_hint[:80])
-                self._turns_on_current_topic = 0
-            else:
-                self._turns_on_current_topic += 1
-        else:
-            # Continue on the same topic
-            self._turns_on_current_topic += 1
+        # memory_hint = the seed message text (topic of conversation)
+        memory_hint = seed_text
 
         # Extract style_profile from speaker character data
         style_profile = speaker.get("style_analyzer") or speaker.get("style_analyzer_json") or {}
@@ -351,69 +379,6 @@ class ConversationOrchestrator:
         )
 
     # ── Helpers ───────────────────────────────────────────────────────────
-
-    async def _pick_topic_from_history(self, session_id: str, speaker: dict) -> Optional[str]:
-        """Pick a topic for conversation by searching the full chat history via FTS5.
-
-        Tries memories first (curated topics), then falls back to random messages
-        from the full original history stored in the database.
-        """
-        # Try memories first (curated, high-quality topics)
-        memories = speaker.get("memories_json", {})
-        if memories:
-            candidates = []
-            for topic in memories.get("topics", []):
-                theme = topic.get("theme", "")
-                summary = topic.get("summary", "")
-                if theme and theme not in self._used_topics:
-                    candidates.append(f"вы обсуждали: {theme} — {summary}")
-            for joke in memories.get("inside_jokes", []):
-                if joke not in self._used_topics:
-                    candidates.append(f"ваша внутренняя шутка: {joke}")
-            for fact in memories.get("facts_about_each_other", []):
-                if fact not in self._used_topics:
-                    candidates.append(f"ты знаешь что: {fact}")
-
-            if candidates:
-                chosen = random.choice(candidates)
-                self._used_topics.add(chosen)
-                return chosen
-
-        # Fall back to random messages from the full history in DB
-        all_msgs = await get_original_messages(session_id)
-        if not all_msgs:
-            return None
-
-        # Try a few random messages to find one with substance (>20 chars)
-        for _ in range(5):
-            msg = random.choice(all_msgs)
-            text = msg.get("text", "")
-            if len(text) > 20 and text not in self._used_topics:
-                sender = msg.get("sender_name", "")
-                self._used_topics.add(text)
-                if len(self._used_topics) > 50:
-                    self._used_topics = set(list(self._used_topics)[-25:])
-                return f"{sender} писал: {text}"
-
-        # Last resort: any random message
-        msg = random.choice(all_msgs)
-        sender = msg.get("sender_name", "")
-        text = msg.get("text", "")
-        return f"{sender} писал: {text}"
-
-    @staticmethod
-    def _detect_memory_category(memory_hint: str) -> str:
-        """Detect the category of a memory hint based on its prefix."""
-        if memory_hint.startswith("вы обсуждали:"):
-            return "topic"
-        elif memory_hint.startswith("ты знаешь что:"):
-            return "fact"
-        elif memory_hint.startswith("ваша внутренняя шутка:"):
-            return "joke"
-        elif memory_hint.startswith("повторяющаяся ситуация:"):
-            return "situation"
-        else:
-            return "unknown"
 
     def _char_id_to_name(self, character_id: str) -> str:
         """Map a character_id to its name."""
